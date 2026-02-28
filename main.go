@@ -13,6 +13,7 @@ const (
 	colorGreen  = "\033[32m"
 	colorRed    = "\033[31m"
 	colorYellow = "\033[33m"
+	colorPurple = "\033[35m"
 	colorBold   = "\033[1m"
 	colorDim    = "\033[2m"
 )
@@ -67,14 +68,23 @@ func printResults(results []DomainResult) {
 				colorBold, padded, colorReset,
 				colorGreen, colorBold, colorReset,
 				colorDim, r.Price, colorReset)
+		case StatusPremium:
+			fmt.Printf("  %s%s%s  %s%s Premium   %s\n",
+				colorBold, padded, colorReset,
+				colorPurple, colorBold, colorReset)
 		case StatusTaken:
 			fmt.Printf("  %s%s%s  %s%s Taken     %s\n",
 				colorBold, padded, colorReset,
 				colorRed, colorBold, colorReset)
 		default:
-			fmt.Printf("  %s%s%s  %s%s Unknown   %s\n",
+			reason := ""
+			if r.Reason != "" {
+				reason = fmt.Sprintf("  %s(%s)%s", colorDim, r.Reason, colorReset)
+			}
+			fmt.Printf("  %s%s%s  %s%s Unknown   %s%s\n",
 				colorBold, padded, colorReset,
-				colorYellow, colorBold, colorReset)
+				colorYellow, colorBold, colorReset,
+				reason)
 		}
 	}
 	fmt.Println()

@@ -16,12 +16,14 @@ const (
 	StatusUnknown DomainStatus = iota
 	StatusAvailable
 	StatusTaken
+	StatusPremium
 )
 
 type DomainResult struct {
 	Domain string
 	Status DomainStatus
 	Price  string
+	Reason string
 }
 
 var errCloudflareBlocked = errors.New("blocked by Cloudflare challenge")
@@ -75,7 +77,11 @@ func CheckDomains(domains []string, headless bool) ([]DomainResult, error) {
 		time.Sleep(1500 * time.Millisecond)
 
 		if err := searchWithRetry(page, d, wanted, found); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to check %s: %v\n", d, err)
+			found[strings.ToLower(d)] = DomainResult{
+				Domain: d,
+				Status: StatusUnknown,
+				Reason: err.Error(),
+			}
 		}
 	}
 
@@ -86,7 +92,7 @@ func CheckDomains(domains []string, headless bool) ([]DomainResult, error) {
 		if r, ok := found[key]; ok {
 			results = append(results, r)
 		} else {
-			results = append(results, DomainResult{Domain: d, Status: StatusUnknown})
+			results = append(results, DomainResult{Domain: d, Status: StatusUnknown, Reason: "not found in search results"})
 		}
 	}
 
@@ -126,8 +132,11 @@ func searchAndScrape(page playwright.Page, query string, wanted map[string]bool,
 		return fmt.Errorf("navigating to namecheap: %w", err)
 	}
 
-	// Wait for Cloudflare challenge to pass and first result to appear
-	err := page.Locator("article[class*='domain-']").First().WaitFor(playwright.LocatorWaitForOptions{
+	// Wait for Cloudflare challenge to pass and first settled result to appear.
+	// Articles go through loading states (domain-empty, fetching, disappear)
+	// before settling with "available" or "unavailable" classes.
+	settledSelector := "article.available, article.unavailable"
+	err := page.Locator(settledSelector).First().WaitFor(playwright.LocatorWaitForOptions{
 		Timeout: playwright.Float(30000),
 	})
 	if err != nil {
@@ -139,9 +148,9 @@ func searchAndScrape(page playwright.Page, query string, wanted map[string]bool,
 		return fmt.Errorf("waiting for results for %s (possibly rate limited): %w", query, err)
 	}
 
-	// Poll until the article count stabilizes instead of a fixed 2s wait.
+	// Poll until the settled article count stabilizes.
 	// Checks every 400ms, exits once count is stable for one interval (max ~2s).
-	articleLocator := page.Locator("article[class*='domain-']")
+	articleLocator := page.Locator(settledSelector)
 	prevCount := 0
 	for range 5 {
 		time.Sleep(400 * time.Millisecond)
@@ -156,11 +165,10 @@ func searchAndScrape(page playwright.Page, query string, wanted map[string]bool,
 }
 
 func scrapeResults(page playwright.Page, wanted map[string]bool, found map[string]DomainResult) error {
-	articles, err := page.Locator("article[class*='domain-']").All()
+	articles, err := page.Locator("article.available, article.unavailable").All()
 	if err != nil {
 		return fmt.Errorf("querying results: %w", err)
 	}
-
 	for _, article := range articles {
 		result, err := parseArticle(article)
 		if err != nil {
@@ -208,7 +216,11 @@ func parseArticle(article playwright.Locator) (DomainResult, error) {
 			result.Status = StatusAvailable
 		} else if strings.Contains(classList, " unavailable") {
 			result.Status = StatusTaken
+		} else {
+			result.Reason = fmt.Sprintf("unrecognized status class: %s", classes)
 		}
+	} else {
+		result.Reason = "could not read element classes"
 	}
 
 	// Get price from .price strong
@@ -219,6 +231,11 @@ func parseArticle(article playwright.Locator) (DomainResult, error) {
 		if err == nil {
 			result.Price = strings.TrimSpace(price)
 		}
+	}
+
+	// Available domains with no price are premium
+	if result.Status == StatusAvailable && result.Price == "" {
+		result.Status = StatusPremium
 	}
 
 	return result, nil
